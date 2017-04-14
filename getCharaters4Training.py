@@ -10,13 +10,14 @@ import random
 class GetCharatersForTraining():
     """
     produce positive training set for haar cascade to recognize a character in a finnisn licence plate
+
+    also training characters for tesseract
     """
 
     def __init__(self):
         self.font_height = 32
         self.output_height = 48
-        self.chars = 'ABCDEFGHIJKLMNOPRSTUVXYZ0123456789'
-        self.char_shift_y = -5
+        self.chars = 'ABCDEFGHIJKLMNOPRSTUVXYZ-0123456789'
         #for noise
         self.sigma=0.1
         self.angle=0
@@ -81,37 +82,38 @@ class GetCharatersForTraining():
             mean = max(0,np.mean(image))
             # var = 0.1
             # sigma = var**0.5
-            print ("M",mean, self.sigma)
+            #print ("M",mean, self.sigma)
             gauss = np.random.normal(mean, self.sigma, (row, col))
             gauss = gauss.reshape(row, col)
             noisy = image + gauss
             return noisy
         elif noise_typ == "sp":
+            #print("sp ", self.salt_amount)
             row, col = image.shape
+            a=np.zeros(image.shape)
+            a=a.flatten()
             s_vs_p = 0.5
             out = image
             # Salt mode
             num_salt = np.ceil(self.salt_amount * image.size * s_vs_p)
-            coords = [np.random.randint(0, i - 1, int(num_salt))
-                      for i in image.shape]
-            out[coords] = 1
-
+            a[0:num_salt]=1
+            np.random.shuffle(a)
+            a = a.reshape(image.shape)
+            out = out + a
+            np.clip(a, 0, 1)
             # Pepper mode
             num_pepper = np.ceil(self.salt_amount * image.size * (1. - s_vs_p))
-            coords = [np.random.randint(0, i - 1, int(num_pepper))
-                      for i in image.shape]
-            out[coords] = 0
+            b=np.ones(image.shape)
+            b=b.flatten()
+            b[0:num_pepper]=0
+            np.random.shuffle(b)
+            b = b.reshape(image.shape)
+            out = np.multiply(out,b)
             return out
         elif noise_typ == "poisson":
             vals = len(np.unique(image))
             vals = 2 ** np.ceil(np.log2(vals))
             noisy = np.random.poisson(image * vals) / float(vals)
-            return noisy
-        elif noise_typ == "speckle":
-            row, col = image.shape
-            gauss = np.random.randn(row, col)
-            gauss = gauss.reshape(row, col)
-            noisy = image + image * gauss
             return noisy
 
 
@@ -152,7 +154,7 @@ class GetCharatersForTraining():
         rows= image.shape[0]
         halfcols=cols/2
         average_color = 0.5*(np.average(image[0][:]) + np.average(image[rows-1][:]))
-        print("COLOR",average_color)
+        # print("COLOR",average_color)
         M = cv2.getRotationMatrix2D((cols/2,rows/2),self.angle,1)
         return cv2.warpAffine(image,M,(cols,rows),borderValue=average_color)
 
@@ -172,16 +174,14 @@ class GetCharatersForTraining():
             self.angle = random.gauss(0, 15)
             for mychar, img in font_char_ims.items():
                 myones = np.ones(img.shape)
-                if myrandoms[0] < 0.5:
+                if myrandoms[0] < 0.3:
                     img = self.noisy("poisson",img )
-                if myrandoms[1] < 0.5:
+                if myrandoms[1] < 0.3:
                     self.sigma = max(0.01, np.random.normal(0.2, 0.1, 1))
                     img = self.noisy("gauss",img )
                 if myrandoms[2] < 0.3:
                     self.salt_amount = max(0.01, np.random.normal(0.05, 0.05, 1))
                     img = self.noisy("sp",img )
-                if myrandoms[3] < 0.5:
-                    img = self.noisy("speckle",img )
                 img = self.rotate(image=img)
                 img=255*(myones-img)
                 cv2.imwrite(positive_dir+'/'+mychar+str(condition)+'.tif', img)
@@ -189,6 +189,69 @@ class GetCharatersForTraining():
                 #plt.xticks([]), plt.yticks([])  # to hide tick values on X and Y axis
                 #plt.show()
 
+
+    def generate_positives_for_tesseract(self,font_file=None, repeat=30, positive_dir='PositivesTesseract',columns=40,filename='fpl.finplate.exp', rows=10):
+        import os
+        font_char_ims = dict(self.make_char_ims(font_file=font_file))
+        random.seed()
+        bigsheet=np.ones((4000, 3000))*255
+        ybig=bigsheet.shape[0]
+        if not os.path.exists(positive_dir):
+            os.makedirs(positive_dir)
+        if os.path.exists(positive_dir+'/'+filename+'*'):
+            os.remove(positive_dir+'/'+filename+'*')
+
+        posx=0; posy=0; stridex=1; stridey=20; file_count=0
+        for condition in range(repeat):
+            myrandoms = np.random.random(4)
+            print("myrandoms ", myrandoms)
+            self.angle = random.gauss(0, 4)
+            for mychar, img in font_char_ims.items():
+                myones = np.ones(img.shape)
+                if myrandoms[0] < 0.0:
+                    img = self.noisy("poisson",img )
+                if myrandoms[1] < 0.5:
+                    self.sigma = max(0.01, np.random.normal(0.05, 0.05, 1))
+                    img = self.noisy("gauss",img )
+                if myrandoms[2] < 0.5:
+                    self.salt_amount = max(0.001,
+                                           np.random.normal(0.01, 0.01, 1))
+                    img = self.noisy("sp",img )
+
+
+                img = self.rotate(image=img)
+                img=255*(myones-img)
+                y1=posy*(img.shape[0]+stridey)
+                y2=y1+img.shape[0]
+                x1=posx * (img.shape[1]+stridex)
+                x2=x1 + img.shape[1]
+                #print(x1,x2,y1,y2,img.shape)
+                bigsheet[y1:y2, x1:x2] =img
+                with open(positive_dir+'/'+filename+str(file_count)+'.box', 'a') as f:
+                    #print("YB ", ybig, y2, y1, ybig-y2, ybig-y1)
+                    f.write(mychar+ \
+                        ' ' + str(x1) + \
+                        ' ' + str(ybig-y2) + \
+                        ' ' + str(x2) + \
+                        ' ' + str(ybig-y1) + \
+                        ' 0 \n')
+
+
+                posx = posx + 1
+                if posx > columns:
+                    posx = 0
+                    posy = posy + 1
+                if posy > rows:
+                    posx = 0
+                    posy = 0
+                    cv2.imwrite(positive_dir+'/'+filename+str(file_count)+'.tif', bigsheet)
+                    file_count = file_count + 1
+
+        cv2.imwrite(positive_dir+'/'+filename+str(file_count)+'.tif', bigsheet)        
+
+                
+        
+                
     def generate_ideal(self, font_file=None, positive_dir='PositivesIdeal'):
         """ write characters once without distorsions"""
         import os
@@ -211,14 +274,15 @@ if __name__ == '__main__':
     #app1.generate_ideal(font_file=font_file)
 
     #sys.exit()
-    app1.generate_positives_for_haarcascade(font_file=font_file, repeat=40)
+    #app1.generate_positives_for_haarcascade(font_file=font_file, repeat=40)
+    app1.generate_positives_for_tesseract(font_file=font_file, repeat=400)
 
 
-    font_char_ims = dict(app1.make_char_ims(font_file=font_file))
-    for mychar, img in font_char_ims.items():
-        print ("mychar: ",mychar, img.shape )
-        img_noisy = app1.noisy("speckle", img)
-        img_rotated = app1.rotate(image=img_noisy, angle=-10)
-        plt.imshow(img_rotated)
-        plt.xticks([]), plt.yticks([])  # to hide tick values on X and Y axis
-        plt.show()
+    #font_char_ims = dict(app1.make_char_ims(font_file=font_file))
+    #for mychar, img in font_char_ims.items():
+    #    print ("mychar: ",mychar, img.shape )
+    #    img_noisy = app1.noisy("speckle", img)
+    #    img_rotated = app1.rotate(image=img_noisy, angle=-10)
+    #    plt.imshow(img_rotated)
+    #    plt.xticks([]), plt.yticks([])  # to hide tick values on X and Y axis
+    #    plt.show()
